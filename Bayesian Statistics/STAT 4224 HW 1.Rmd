@@ -1,0 +1,151 @@
+---
+title: 'STAT 4224 HW #1'
+author: "Carlyle Morgan"
+date: "9/22/2021"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1.
+
+## a.
+
+\begin{table}[h!]
+\begin{tabular}{|l|l|l|l|l|}
+\hline
+ & X=0 & X=1 & X=2 & X=3 \\ \hline
+Y=0 & 1/12 & 1/4 & 3/20 & 1/60 \\ \hline
+Y=1 & 1/60 & 3/20 & 1/4 & 1/12 \\ \hline
+\end{tabular}
+\end{table}
+
+
+## b.
+
+$E(Y|X=0) = \frac{1}{2}(1) + \frac{3}{10}(2) + \frac{1}{30}(3) = \frac{6}{5}$
+$E(Y|X=1) = \frac{3}{10}(1) + \frac{1}{2}(2) + \frac{1}{6}(3) = \frac{9}{5}$
+$E(Y) = (\frac{1}{4} + \frac{3}{20})(1) +(\frac{1}{4} + \frac{3}{20})(2) + (\frac{1}{60}+\frac{1}{12})(3) = \frac{3}{2}$
+
+$E(E(Y|X)) = (\frac{6}{5} + \frac{9}{5})\frac{1}{2} = \frac{3}{2} =E(Y)$
+
+## c.
+$var(Y|X=0) = \frac{1}{2}(1) + \frac{3}{10}(4) + \frac{1}{30}(9) - (\frac{6}{5})^2 = \frac{14}{25}$
+
+$var(Y|X=1) = \frac{3}{10}(1) + \frac{1}{2}(4) + \frac{1}{6}(9) - (\frac{9}{5})^2 = \frac{14}{25}$
+
+$var(Y) = (\frac{1}{4} + \frac{3}{20})(1) +(\frac{1}{4} + \frac{3}{20})(4) + (\frac{1}{60}+\frac{1}{12})(9) - (\frac{3}{2})^2 = \frac{13}{20}$
+
+$E(var(Y|X)) = (\frac{14}{25})(\frac{1}{2}) +  (\frac{14}{25})(\frac{1}{2}) = \frac{14}{25}$
+
+$var(E(Y|X)) = (\frac{36}{25})(\frac{1}{2}) +  (\frac{81}{25})(\frac{1}{2}) - (\frac{3}{2})^2 = \frac{9}{100}$
+
+Thus, $E(var(Y|X))+ var(E(Y|X)) = \frac{14}{25} + \frac{9}{100} = \frac{13}{20} = var(Y)$
+
+## d. 
+$p(x=1|y=2) = \frac{\frac{1}{4}}{\frac{3}{20}+\frac{1}{4}} = \frac{5}{8}$
+
+# 2.
+
+## a.
+$p(x|y,z) = \frac{p(x,y,z)}{p(y,z)} = \frac{p(x,y,z)}{\int p(x',y,z)dx'}$
+
+$= \frac{f(x,z)g(y,z)}{\int f(x',z) g(y,z) dx'}$
+
+$= \frac{f(x,z)}{\int f(x',z)dx'}$
+
+$=\frac{f(x,z)}{h^*(z)} = f^*(x,z)$
+
+## b.
+
+$p(y|x,z) = \frac{p(x,y,z)}{p(x,z)} = \frac{p(x,y,z)}{\int p(x,y',z)dy'}$
+
+$= \frac{f(x,z)g(y,z)}{\int f(x,z) g(y',z) dy'}$
+
+$= \frac{g(y,z)}{\int g(y',z)dy'}$
+
+$=\frac{g(y,z)}{h^*(z)} = g^*(y,z)$
+
+## c.
+
+$p(x|z) = \int p(x|y,z)p(y|z)dy = f^*(x,z) \int p(y|z)dy =f^*(x,z)$
+
+$p(y|z) = \int p(y|x,z)p(x|z)dy = g^*(y,z) \int p(x|z)dy =g^*(y,z)$
+
+
+$\Rightarrow p(x,y|z) = p(x|z)p(y|x,z)$
+
+$=f^*(x,z)g^*(y,z) = p(x|z)p(y|z)$
+
+# 3.
+
+## a.
+$p(y_1,...y_n|\theta) = \prod_{i=1}^np(y_i|\theta) = \prod_{i=1}^n \theta^{y_i}(1-\theta)^{1-y_i} = \theta^{\sum y_i}(1-\theta)^{n-\sum y_i}$
+
+$p(\sum_{i=1}^n y_i = y|\theta) = {n \choose y}\theta^{y}(1-\theta)^{n-y}$
+
+## b.
+```{r}
+theta<-seq(0,1,.1)
+likelihood<-dbinom(58,100,theta)
+likelihood
+plot(theta,likelihood, type = "l")
+```
+
+## c.
+```{r}
+likelihood<-dbinom(58,100,theta)
+post<-likelihood/sum(likelihood)
+plot(theta,post, type = "l")
+```
+
+## d.
+```{r}
+theta<-seq(0,1,.001)
+likelihood<-dbinom(58,100,theta)
+plot(theta,likelihood, type = "l")
+```
+
+## e.
+```{r}
+post<-dbeta(theta,58+1,100+1-58)
+plot(theta,post,type="l")
+```
+
+All the graphs have the same pattern across theta $\in [0,1]$.
+
+# 4.
+
+## a.
+
+$p(Child has Hh|Child has brown eyes, parents both have brown eyes)$
+
+$=\frac{p(Child has Hh,Child has brown eyes, parents both have brown eyes)}{p(Child has brown eyes, parents both have brown eyes)}$
+
+$=\frac{p(childhasHh,parentsbothHh)+p(childhasHh, one parent has Hh)+p(child has Hh, parents both HH)}{p(childhasbrowneyes,parentsbothHh)+p(childhasbrowneyes, one parent has Hh)+p(child has browneyes, parents both HH)}$
+
+$=\frac{\frac{1}{2}4p^2(1-p)^2+\frac{1}{2}4p(1-p)^3+0(1-p)^4}{\frac{3}{4}4p^2(1-p)^2+4p(1-p)^3+(1-p)^4}$
+
+$=\frac{2p}{1+2p}$
+
+## b.
+
+### i.
+
+$p(Judi is Hh|Judy has brown eyes, Judy's parents have brown eyes, Judy's partner is Hh,p)$
+
+$=\frac{\frac{2p}{1+2p}\frac{3}{4}}{\frac{2p}{1+2p}\frac{3}{4}+\frac{1}{1+2p}} = \frac{3p}{3p+2}$
+
+$\hat p^2 = .16 \Rightarrow \hat p = .4$
+
+$\Rightarrow$ The posterior probability is $\frac{3}{8}$
+
+### ii.
+
+The child must be of Hh for the grandchild to have blue eyes. Given $\hat p = .4$: 
+
+$p(child is Hh|...) = \frac{3}{8}\frac{2}{3} + \frac{5}{8}\frac{1}{2} = \frac{9}{16}$
+
+$p(grandchild is Hh|...) = \frac{9}{16}(\frac{1}{4}2p(1-p)+\frac{1}{2}p^2) = \frac{9}{80}$
+
