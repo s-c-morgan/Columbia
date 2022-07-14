@@ -1,0 +1,368 @@
+---
+title: "STAT 4221 Final Project"
+author: "Carlyle Morgan"
+date: "5/4/2022"
+output: pdf_document
+geometry: margin=2cm
+---
+
+```{r packages, include=FALSE}
+library(ggplot2)
+library(quantmod)
+library(stringr)
+library(dplyr)
+library(nnet)
+library(e1071)
+library(readr)
+library(class)
+library(MASS, exclude = 'select')
+zori <- read_csv("ZORI_data.csv")
+ACS_2014<-read.csv("ACS 2014.csv")
+```
+
+# Research Question
+
+Can we use demographic data from the ACS to determine if a given zipcode had an increase or decrease in rental prices during the first months of the COVID-19 Pandemic (as measured by the ZORI Index)?
+
+# Pre-Processing and Exploratory Data Analysis
+
+```{r, include = FALSE}
+##Cleaning ACS Data
+column_names<-ACS_2014[1,]
+ACS_2014<-ACS_2014[-1,]
+
+margin_ind<-c()
+percent_ind<-c()
+for (i in 1:ncol(ACS_2014)){
+  if(str_sub(colnames(ACS_2014)[i],-1)=="M"){
+    margin_ind<-append(margin_ind,i)
+  }
+}
+ACS_2014<-ACS_2014[,-margin_ind]
+for (i in 1:ncol(ACS_2014)){
+  if(str_sub(colnames(ACS_2014)[i],-2,-2)=="P"){
+    percent_ind<-append(margin_ind,i)
+  }
+}
+ACS_2014<-ACS_2014[,-percent_ind]
+ACS_2014$GEO_ID<-sapply(ACS_2014$GEO_ID, function(x) str_sub(x,-5))
+colnames(ACS_2014)[colnames(ACS_2014)=='GEO_ID']<-"RegionName"
+ACS_2014$RegionName<-as.double(ACS_2014$RegionName)
+
+ACS_2014<-ACS_2014[ACS_2014$RegionName %in% zori$RegionName,]
+
+
+
+```
+
+## ZORI
+
+The Zillow Observed Rent Index (ZORI) measures changes in asking rents over time, controlling for changes in the quality of the available rental stock.
+
+I downloaded ZORI data from April of 2014 to March of 2022 at the zipcode level. There were 2249 zipcodes for which ZORI data was available. ZORI consists of monthly time-series data, so it is helpful to visualize general trends over the observed period.
+
+Mean ZORI over the period:
+
+```{r}
+monthmeans<-apply(zori[,5:103],2,function(x) mean(x, na.rm=TRUE))
+ts_mme<-ts(monthmeans,start=c(2014,1), end=c(2022,3), frequency=12)
+plot(ts_mme, ylab = "ZORI")
+```
+
+There appears to be a yearly seaonality across the dataset.
+
+Now let's investigate COVID's impact on mean rents:
+```{r}
+covidmeans<-apply(zori[,76:88],2,function(x) mean(x, na.rm=TRUE))
+ts_covid<-ts(covidmeans,start=c(2019,12), end=c(2020,12), frequency=12)
+ts_covid
+```
+
+There was a distinct dip in rents between March of 2020 and April of 2020. Let's add feature 'covidchange' with value $1$ if rents increased or remained the same and $0$ if rents decreased in a certain zipcode. Of the 2226 zipcodes in the dataset, 1252 had decreased rent over this period while 974 had increased or stagnant rents.
+
+```{r, include = FALSE}
+zori$covidchange<-ifelse(zori$`2020-05`-zori$`2020-03`<0,0,1)
+zori<-zori[!is.na(zori$covidchange),]
+zori_covid<-zori%>%
+  select(RegionName:MsaName, covidchange)
+```
+
+## ACS Data
+
+The American Community Survey is sort of like a miniature census. It collects a wide variety of demographic data. I used data from the 2014 American Community Survey at the zipcode level. We will only want to look at data for which we have both ZORI and ACS data, but the latter set completely encompasses the first. The ACS data primarily consists of population counts on the basis of age, gender and race.
+
+The ACS by its very design will have several linearly dependent features, leading to problems of rank deficiency if the set is used for linear regression. By removing linear dependent features, working with the dataset will also be more computationally efficient. I will cheat and use the lm() function's built-in ability to detect linearly dependent columns to filter such values out of the ACS. We also don't care about regression on columns that predict margin of error for demographics (Ex. we estimate the number of children under 5 with X% error). 
+
+```{r, include = FALSE}
+ACS_2014<-data.frame(lapply(ACS_2014, as.numeric))
+nonlinlm<-lm(RegionName~., data = ACS_2014)
+ACS_2014<-ACS_2014[,-which(summary(nonlinlm)$aliased[-1])]
+zips<-ACS_2014$RegionName
+```
+
+The 2014 ACS Data originally had 33121 observations of 326 features. After filtering observations that do not have a match in the ZORI dataset, the number of observations decreased to 2246. After condensing linear dependent columns and removing columns that provided relative or absolute margins of errors for ACS estimates, 326 features reduced to 61.
+
+## Normalization of the Feature Space
+
+Given the difference in orders of magnitude between features, I decided that the data needed some form of normalization. Since most features are discrete demographic data, they take only positive real values. Therefore one of the following normalization seemed appropriate. 
+
+### Cumulative Norm
+
+For observation $X_i$ of feature $j$, $X_{ij}$, the normalized observation would be: $$\tilde X_{ij} = \frac{X_{ij}}{\sum_k X_{kj}}$$. This is equivalent to dividing the individual values of the features by the sum of each features, with the new normalized values between 0 and 1.
+
+```{r, echo = FALSE}
+ACS_cumnorm<-data.frame(apply(ACS_2014, 2, function(x) x/sum(x)))
+hist(ACS_2014$DP05_0004E, main = "Unnormalized Population under 5 Years")
+hist(ACS_cumnorm$DP05_0004E, main="Cumulatively Normalized Population under 5 years")
+
+```
+
+For these histograms of the "Under 5 Years population" in zipcodes in the ZORI dataset, the cumulatively normalized population seems to emulate the distribution of the unnormalized population. 
+
+### Maximum Norm
+
+For observation $X_i$ of feature $j$, $X_{ij}$, the normalized observation would be: $$\tilde X_{ij} = \frac{X_{ij}}{\max_k \{X_{kj}\}}$$. This is equivalent to dividing the individual values of the features by the max of each features, with the new normalized values between 0 and 1.
+
+```{r}
+ACS_maxnorm<-data.frame(apply(ACS_2014, 2, function(x) x/max(x)))
+hist(ACS_2014$DP05_0004E, main = "Unnormalized Population under 5 Years")
+hist(ACS_maxnorm$DP05_0004E, main="Maximum Normalized Population under 5 years")
+
+```
+
+For these histograms of the "Under 5 Years population" in zipcodes in the ZORI dataset, the maximum normalized population seems to emulate the distribution of the unnormalized population. 
+
+### Which to use?
+
+Both norms seem to do the desired task of mapping the existing values of the features to values between 0 and 1 and roughly preserving the distribution of the unnormalized values. However, the maximum norm seems to do a better job with producing values that are not extraordinarily small, making greedy algorithms I might use in my analysis a bit easier to program. The cumulative norm also creates incredible sparse data concentrated close to zero, making decisions stumps also more difficult to program and utilize. Therefore, I chose to use the \textbf{max norm}.
+
+# Classification
+
+I chose to use a variety of different classification algorithms. To standardize results across models, I created a test set composed of 20% of the original data that was used to calculate the test error across algorithms. The test set had 174 zipcodes where rents increased over the first months of the pandemic and 270 where rents did not. The training set had 799 zipcodes where rents increased and 980 where rents did not. Where cross validation for hyperturning was performed, cross validation sets across models were not standardized.  
+
+```{r, include = FALSE}
+ACS_maxnorm$RegionName<-zips
+full_data<-na.omit(left_join(ACS_maxnorm, zori_covid))
+full_data$covidchange<-as.factor(full_data$covidchange)
+testind<-sample(1:nrow(full_data), nrow(full_data)*0.2)
+train<-full_data[-testind,]
+test<-full_data[testind,]
+```
+The models I decided to end up implementing wre K-Nearest Neighbors, Logistic Regression, LDA, QDA, and Adaptive Boosting. My initial hypothesis was that of these, Adaptive Boosting would be the most powerful, especially with such a large number of features. I thought that Adaptive Boosting would do a good job of performing feature selection while also making quality predictions.
+
+## K-Nearest Neighbors
+```{r,echo=FALSE}
+cl<-factor(train$covidchange)
+
+knnerror<-function(train,k,folds){
+  cverror<-c()
+  train$fold<-ceiling(runif(nrow(train))*folds)
+  for (fld in 1:folds){
+    temptest<-train[train$fold==fld,]
+    temptrain<-train[train$fold!=fld,]
+    cl<-factor(temptrain$covidchange)
+    cverror<-append(cverror, mean(ifelse(knn(temptrain[,1:61],temptest[,1:61], cl, 2)!=temptest$covidchange,1,0)))
+  }
+  mean(cverror)
+}
+
+knn_cv<-sapply(1:100,function(x)knnerror(train,x,5))
+knn_test<-sapply(1:100, function(x)mean(ifelse(knn(train[,1:61],test[,1:61], cl, x)!=test$covidchange,1,0)))
+plot(1:100, knn_cv, col = "blue", ylim = c(0.35, 0.5), main = "KNN Classification", xlab = "K")
+points(1:100, knn_test, col = "red")
+legend("bottomright", legend = c("5-Fold Cross-Validation Error", "Test Error"), lty = c(3,3), col = c("blue", "red"))
+
+## model evaluations
+knn5test=mean(ifelse(knn(train[,1:61],test[,1:61], cl, 5)!=test$covidchange,1,0))
+knn10test=mean(ifelse(knn(train[,1:61],test[,1:61], cl, 10)!=test$covidchange,1,0))
+knn50test=mean(ifelse(knn(train[,1:61],test[,1:61], cl, 50)!=test$covidchange,1,0))
+knn100test=mean(ifelse(knn(train[,1:61],test[,1:61], cl, 100)!=test$covidchange,1,0))
+knn200test=mean(ifelse(knn(train[,1:61],test[,1:61], cl, 200)!=test$covidchange,1,0))
+```
+
+It seems that from this graph, a solid choice for K would between 40 and 60. Oddly enough, cross validation error seems relatively constant across the parameter space. This indicates that one should be a bit skeptical about the observed test error, especially when it is drastically below the cross-validation error. The overall trend is clear though: we should probably use at least more than 10 neighbors in the classification model.
+
+## Logistic Regression
+
+```{r, include = FALSE}
+logregdata<-train%>%
+  select(DP05_0001E:DP05_0081E, covidchange)
+multilogreg<-multinom(covidchange~., data = logregdata)
+logistictrainerror<-mean(ifelse(predict(multilogreg, logregdata)==train$covidchange,0,1))
+logistictesterror<-mean(ifelse(predict(multilogreg, test)==test$covidchange,0,1))
+
+```
+
+From the regression summary, it appears that the following ACS survey entries had significant decision power: 29, 62, 66, and 72. This corresponds to the following entries: total population that is one race only, Asian population, Hispanic or Latino population (of any race), and Non-Hispanic White population. 
+
+From this result, it appears that racial as opposed to age or gender demographic data is especially correlated with rental price movement behavior. I wonder if this may be because large numbers of the above populations are correlated with urban zip codes, and from what I understand, urban zipcodes took the hardest hits from COVID. I will keep analyzing this trend in some of my other models.
+
+
+## LDA
+
+```{r, include = FALSE}
+ldadata<-train%>%
+  select(DP05_0001E:DP05_0081E, covidchange)
+ldareg<-lda(covidchange~.,data = ldadata)
+ldatrainerror<-mean(ifelse(predict(ldareg, logregdata)$class==train$covidchange,0,1))
+ldatesterror<-mean(ifelse(predict(ldareg, test)$class==test$covidchange,0,1))
+```
+
+LDA seemed to perform comparably to my Logistic Regression results, which makes intuitive sense given how approximate they are mathematically. 
+
+## QDA
+
+```{r, include = FALSE}
+qdadata<-train%>%
+  select(DP05_0001E:DP05_0081E, covidchange)
+qdareg<-qda(covidchange~.,data = qdadata)
+qdatrainerror<-mean(ifelse(predict(qdareg, logregdata)$class==train$covidchange,0,1))
+qdatesterror<-mean(ifelse(predict(qdareg, test)$class==test$covidchange,0,1))
+```
+
+QDA seems to perform worse than LDA on the test set despite being more complex. This indicates to me that my QDA model might be overfit.
+
+## Adaptive Boosting
+```{r, echo = FALSE}
+adatrain<-train%>%
+  select(DP05_0001E:DP05_0081E, covidchange)
+adatrain$covidchange<-ifelse(adatrain$covidchange==0,1,-1)
+adatest<-test%>%
+  select(DP05_0001E:DP05_0081E, covidchange)
+adatest$covidchange<-ifelse(adatest$covidchange==0,1,-1)
+X<-adatrain
+
+adaclassify<-function(case, j_stars=j_stars, theta_stars=theta_stars, alphas=alphas){
+  class_sum<-0
+  for(g in 1:length(j_stars)){
+    class_sum<-class_sum+(alphas[g]*ifelse(case[j_stars[g]]>theta_stars[g],1,-1))
+  }
+  ifelse(class_sum>0,1,-1)
+}
+
+
+theta_err<-function(X,theta,index,w,y){
+  c<-rep(0,length(X[,index]))
+  c<-ifelse(X[,index]>theta,1,-1)
+  errs<-w*ifelse(y==c,0,1)
+  sum(errs)
+}
+
+ada_errors<-function(X, ada,test){
+  y_pred_train<-apply(X, 1, function(x) adaclassify(x, ada$j_stars, ada$theta_stars, ada$alphas))
+  y_pred_test<-apply(test, 1, function(x) adaclassify(x, ada$j_stars, ada$theta_stars, ada$alphas))
+  train_error<-mean(ifelse(y_pred_train==X$covidchange,0,1))
+  test_error<-mean(ifelse(y_pred_test==test$covidchange,0,1))
+  c(train_error,test_error)
+
+}
+
+adaboost_zips<-function(X, B){
+  y<-X$covidchange
+  weights<-rep(1/nrow(X), nrow(X))
+  j_stars<-rep(0,B)
+  theta_stars<-rep(0,B)
+  alphas<-rep(0,B)
+
+  for (b in 1:B){
+
+    j_star<-which.min(sapply(seq(1,61),function(j) min(sapply(seq(0,1,.1), function(x) theta_err(X,x,j,weights,y)))))
+    theta_star<-seq(0,1,.1)[which.min(sapply(seq(0,1,.1), function(x) theta_err(X,x,j_star,weights,y)))]
+
+    c<-ifelse(X[,j_star]>theta_star,1,-1)
+
+    j_stars[b]<-j_star
+    theta_stars[b]<-theta_star
+
+    epsilon<-sum(weights*ifelse(y==c,0,1))/sum(weights)
+    alphas[b]<-log((1-epsilon)/epsilon)
+    weights<-weights*exp(alphas[b]*ifelse(y==c,0,1))
+  }
+  list(j_stars=j_stars,theta_stars=theta_stars,alphas=alphas)
+}
+
+crossvalerror<-function(X, B, k){
+  X$fold<-ceiling(runif(nrow(X))*k)
+  folderrors<-c()
+  for (i in 1:k){
+    curfold<-X[X$fold==i,]
+    temptrain<-X[X$fold!=i,]
+    tempada<-adaboost_zips(temptrain,B)
+    folderrors<-append(folderrors, ada_errors(temptrain, tempada, curfold)[2])
+  }
+  mean(folderrors)
+}
+
+bs<-c(1,seq(10,100,10))
+## calculated manually bc of computational issues
+ada_cv_errors<-c(0.4210716, 0.4150886,0.4119826, 0.4139941, 0.4135005, 0.4176270, 0.4159448, 0.4101982,0.4052213, 0.4246713, 0.4106369)
+ada_train_errors<-c()
+ada_test_errors<-c()
+for (i in c(1,seq(10,100,10))){
+  temp<-ada_errors(adatrain, adaboost_zips(X,i),adatest)
+  ada_train_errors<-append(ada_train_errors,temp[1])
+  ada_test_errors<-append(ada_test_errors,temp[2])
+}
+
+plot(bs, ada_test_errors, type = "l", col = "blue", xlab = "Number of Learners", ylab = "Error", ylim = c(0.37,0.45), main = "Error and Number of Learners for Adaptive Boosting")
+lines(bs, ada_train_errors, col = "red")
+lines(bs, ada_cv_errors, col = "purple")
+legend("topright", legend = c("Training Error", "Test Error", "Cross-Validation Error"), lty = c(1,1,1), col = c("red", "blue", "purple"))
+
+```
+
+From the results, it looks like my hypothesis was wrong: Adaptive Boosting performs similarly poorly to the QDA model, even with the addition of more learners. 
+
+The first decision stump seems to center around ACS question 33, which is the total number of African Americans in a certain zipcode. This reiterates what was observed in my logistic model, where race seems to be higher correlated with the outcome variable of interest than is other demographic traits like age or sex. 
+
+\newpage
+
+# Results
+\begin{center}
+\begin{table}[h]
+\begin{tabular}{|l|l|l|}
+\hline
+Model & \multicolumn{1}{c|}{Train Error} & Test Error \\ \hline
+5-KNN & \multicolumn{1}{c|}{-} & 0.4369 \\ \hline
+10-KNN & \multicolumn{1}{c|}{-} & 0.4369 \\ \hline
+50-KNN & \multicolumn{1}{c|}{-} & 0.383 \\ \hline
+100-KNN & \multicolumn{1}{c|}{-} & 0.383 \\ \hline
+200-KNN & \multicolumn{1}{c|}{-} & 0.383 \\ \hline
+Logistic & 0.332 & 0.376 \\ \hline
+LDA & 0.340 & 0.383 \\ \hline
+QDA & 0.305 & 0.432 \\ \hline
+1-ADA & 0.421 & 0.408 \\ \hline
+10-ADA & 0.405 & 0.406 \\ \hline
+100-ADA & 0.403 & 0.396 \\ \hline
+\end{tabular}
+\end{table}
+\end{center}
+
+From the summary of errors for the different models, I would choose to use the \textbf{Logistic} or \textbf{LDA} models. 
+
+## Why these?
+
+The LDA and Logistic Regression models have comparatively little complexity while even performing better on the test data than some of their more complex peers. This makes them more ideal solutions according to the bias-variance trade-off. Logistic is also easily interpretable on the basis of individual features.
+
+## Why not the others?
+
+The KNN model seems to improve with higher values of K, even achieving identical results to the Logistic Regression for K larger than  50. However, especially for values of K much larger than 50, I'd be scared of underfitting. Results from KNN regression model summaries are also generally less interpretable.
+
+The QDA model seems to be overfitted given its comparatively low training error and comparatively high test error.
+
+The Adaptive Boosting Models see only minimal returns to additional learners, and adding ones beyond the current maximum of 100 seems like it could lead to overfitting.
+
+
+# Conclusion
+
+All in all, I'm not particularly proud of my models' performance. The variations in performance across the 11 models that I studied was not particularly significant. 
+
+Furthermore, consider the most naive of predictors, a simple Bayes classifier best off the population proportions. Applied to the test set I chose, this Bayes classifier would have a 0.39 test error simply by assigning every zipcode to have decreased rent. That my best performing model only beat this naive classifier by 0.05 is a bit humiliating.
+
+This leads me to make the following conclusions:
+
+1. In the future, I should try and perform more in-depth preprocessing and feature engineering. Perhaps the classification models I created were being misled by nonsignificant features. What this doesn't explain, however, is why my adaptive boosting algorithm failed to produce better results. Adaptive boosting should've only focused on the significant features, and appropriate cross validation of the ideal number of learners should've removed decision stumps using misleading features. However it's possible that it wasn't so much a byproduct of the inclusion of the features but attributes of the features themselves. Perhaps I could've benefitted more from more in-depth outlier analysis or exploring more in-depth the correlations between the seasonality I observed and the outcome variable. I also could try and examine how my choice of normalizing the data may have damaged the predictive capabilities of my models.
+
+2. It's possible that the ACS data simply isn't a good predictor of the outcome variable. There may be a reason that no Machine Learning Repositories use the above data as an example of a viable classification problem. The fact that the Naive Bayes classifier acheived better performance than Adaptive Boosting might be a sign that there isn't a particularly significant correlation between the observed demographic data.
+
+All in all, I feel that there is still more to be done with this dataset. I feel that further approaches to the work that I've done so far would benefit from observing some of my mistakes in this analysis, so it was not all for naught.
